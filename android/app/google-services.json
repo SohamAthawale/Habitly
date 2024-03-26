@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "398572823341",
+    "project_id": "habitly-4c3f6",
+    "storage_bucket": "habitly-4c3f6.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:398572823341:android:33495fbdadcf1dbc20e9a4",
+        "android_client_info": {
+          "package_name": "com.example.habittrackertute"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB5C7Dd42RkB-sqrX1Lch1ixUxKoo5XIcw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
