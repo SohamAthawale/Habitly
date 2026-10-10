@@ -124,11 +124,16 @@ Requirements: Docker with Compose v2.24+. For GPU inference you also need the
 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
 
 ```bash
-cd roundtable
+git clone -b claude/funny-hypatia-727ce6 https://github.com/SohamAthawale/Habitly.git
+cd Habitly/roundtable              # every docker compose command runs from this folder
 cp .env.example .env               # optional: add OPENROUTER_API_KEY; no GPU? set COMPOSE_FILE
 docker compose up -d --build
-docker compose logs -f ollama-init # first run pulls ~10 GB of models; wait for it to exit
+docker compose logs -f ollama-init # first run pulls ~10 GB of models; Ctrl+C once it exits
 ```
+
+Check the GPU is visible to containers first:
+`docker run --rm --gpus all ubuntu nvidia-smi`. If that fails, install the NVIDIA Container
+Toolkit or use the CPU override below.
 
 Then:
 
