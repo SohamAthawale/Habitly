@@ -1,0 +1,131 @@
+# Roundtable: `docker compose up -d` (GPU host), or add `-f compose.cpu.yaml` without a GPU.
+# Every variable is documented in .env.example.
+name: roundtable
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-roundtable}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-roundtable}
+      POSTGRES_DB: ${POSTGRES_DB:-roundtable}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  ollama:
+    image: ollama/ollama:${OLLAMA_VERSION:-0.40.2}
+    restart: unless-stopped
+    environment:
+      # Ollama 0.40 defaults NUM_PARALLEL to 1; agents call it concurrently.
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-4}
+      OLLAMA_MAX_LOADED_MODELS: ${OLLAMA_MAX_LOADED_MODELS:-2}
+      # KV cache is allocated per parallel slot: total ≈ CONTEXT_LENGTH x NUM_PARALLEL.
+      OLLAMA_CONTEXT_LENGTH: ${OLLAMA_CONTEXT_LENGTH:-8192}
+      OLLAMA_FLASH_ATTENTION: ${OLLAMA_FLASH_ATTENTION:-1}
+      OLLAMA_KV_CACHE_TYPE: ${OLLAMA_KV_CACHE_TYPE:-q8_0}
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-30m}
+      OLLAMA_MAX_QUEUE: ${OLLAMA_MAX_QUEUE:-256}
+      OLLAMA_NO_CLOUD: "1" # never route to paid cloud inference
+    volumes:
+      - ollama:/root/.ollama
+    ports:
+      - "127.0.0.1:${OLLAMA_PORT:-11434}:11434"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # One-shot: pulls the configured local models, then exits. Safe to re-run.
+  ollama-init:
+    image: ollama/ollama:${OLLAMA_VERSION:-0.40.2}
+    restart: "no"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      PULL_MODELS: ${OLLAMA_MODEL_PRIMARY:-qwen3:8b} ${OLLAMA_MODEL_SECONDARY:-llama3.1:8b}
+    entrypoint: ["/bin/sh", "-c"]
+    command: ['for m in $$PULL_MODELS; do echo "pulling $$m"; ollama pull "$$m" || exit 1; done']
+
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Service addresses inside the compose network override anything in .env.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-roundtable}:${POSTGRES_PASSWORD:-roundtable}@postgres:5432/${POSTGRES_DB:-roundtable}
+      REDIS_URL: redis://redis:6379/0
+      OLLAMA_BASE_URL: http://ollama:11434
+      ROUNDTABLE_CONFIG: /app/config/roundtable.yaml
+    volumes:
+      - ./config:/app/config:ro
+      - ./prompts:/app/prompts:ro
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  web:
+    build: ./web
+    restart: unless-stopped
+    environment:
+      API_INTERNAL_URL: http://api:8000
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  redisdata:
+  ollama:

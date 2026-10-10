@@ -1,0 +1,8 @@
+# Override for machines without an NVIDIA GPU (laptops, CI):
+#   docker compose -f compose.yaml -f compose.cpu.yaml up -d
+# Or set COMPOSE_FILE=compose.yaml:compose.cpu.yaml in .env.
+services:
+  ollama:
+    deploy: !reset {}
+    environment:
+      OLLAMA_NUM_PARALLEL: ${OLLAMA_NUM_PARALLEL:-2}

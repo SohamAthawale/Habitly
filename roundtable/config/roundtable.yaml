@@ -1,0 +1,79 @@
+# Roundtable behaviour config. Secrets and URLs come from the environment via ${VAR} or
+# ${VAR:-default}; see .env.example for every variable.
+
+limits:
+  max_agents: ${MAX_AGENTS:-12}
+  max_rounds: ${MAX_ROUNDS:-2}
+  request_budget: ${REQUEST_BUDGET:-60}   # per question, all providers
+
+# Specialist count per question complexity in Auto mode: [min, max]
+team_sizing:
+  trivial: [0, 0]
+  standard: [2, 4]
+  hard: [4, 6]
+  research: [6, 12]
+
+providers:
+  ollama:
+    kind: ollama
+    base_url: ${OLLAMA_BASE_URL:-http://localhost:11434}
+    required: true
+    timeout_s: 300            # generous: requests may queue behind OLLAMA_NUM_PARALLEL
+    max_retries: 2
+    # Keep in step with OLLAMA_NUM_PARALLEL so we queue here (measured as limiter wait)
+    # rather than inside Ollama.
+    max_concurrency: ${OLLAMA_NUM_PARALLEL:-4}
+    keep_alive: ${OLLAMA_KEEP_ALIVE:-30m}
+    # No rate limit: local requests cost time, not quota.
+
+  openrouter:
+    kind: openai_compat
+    base_url: https://openrouter.ai/api/v1
+    api_key: ${OPENROUTER_API_KEY:-}
+    requires_api_key: true
+    timeout_s: 90
+    max_retries: 1
+    server_fallback: true     # one request can try up to 3 free models server-side
+    max_server_fallback: 3
+    rate_limit:
+      rpm: ${OPENROUTER_RPM:-20}
+      rpd: ${OPENROUTER_RPD:-50}
+      max_wait_s: 10          # don't stall a run waiting; fall back to local instead
+      default_cooldown_s: 60
+    headers:
+      HTTP-Referer: ${OPENROUTER_SITE_URL:-http://localhost:3000}
+      X-Title: Roundtable
+
+  # Any OpenAI-compatible server (vLLM, LM Studio, ScaleServe, ...).
+  custom:
+    kind: openai_compat
+    enabled: ${CUSTOM_PROVIDER_ENABLED:-false}
+    base_url: ${CUSTOM_PROVIDER_BASE_URL:-}
+    api_key: ${CUSTOM_PROVIDER_API_KEY:-}
+    timeout_s: 120
+    rate_limit:
+      rpm: ${CUSTOM_PROVIDER_RPM:-600}
+
+# Optional per-model settings: extra provider params and pricing (USD per million tokens).
+# Free and local models cost 0, so this only matters for paid endpoints you add yourself.
+models:
+  - ref: ollama:${OLLAMA_MODEL_PRIMARY:-qwen3:8b}
+    # For reasoning models, thinking trades latency for quality. Roles can override.
+    params: {think: false}
+  - ref: ollama:${OLLAMA_MODEL_SECONDARY:-llama3.1:8b}
+
+# Ordered fallback lists per role ("provider:model"). Roles without a list use "default".
+# Ollama comes first for most roles: OpenRouter's free tier is ~50 requests/day, so it is
+# spent where model diversity matters most (the Captain's plan and synthesis).
+model_preferences:
+  default:
+    - ollama:${OLLAMA_MODEL_PRIMARY:-qwen3:8b}
+    - ollama:${OLLAMA_MODEL_SECONDARY:-llama3.1:8b}
+  captain:
+    - openrouter:${OPENROUTER_MODEL_PRIMARY:-meta-llama/llama-3.3-70b-instruct:free}
+    - openrouter:${OPENROUTER_MODEL_SECONDARY:-deepseek/deepseek-chat-v3-0324:free}
+    - ollama:${OLLAMA_MODEL_PRIMARY:-qwen3:8b}
+  contrarian:
+    # A different model family from the default, to reduce correlated mistakes.
+    - ollama:${OLLAMA_MODEL_SECONDARY:-llama3.1:8b}
+    - ollama:${OLLAMA_MODEL_PRIMARY:-qwen3:8b}
