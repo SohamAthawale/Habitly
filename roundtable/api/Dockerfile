@@ -2,7 +2,7 @@
 # Build context is the repository root (roundtable/) so config/ and prompts/ can be baked in.
 FROM python:3.12-slim
 
-COPY --from=ghcr.io/astral-sh/uv:0.11.32 /uv /bin/uv
+RUN pip install --no-cache-dir uv==0.11.32
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never \

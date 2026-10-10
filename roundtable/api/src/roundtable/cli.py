@@ -17,9 +17,10 @@ import sys
 
 from roundtable.config import Settings
 from roundtable.gateway import CallContext, FanoutUsageSink, LoggingUsageSink, MemoryUsageSink
-from roundtable.gateway.gateway import LLMGateway
+from roundtable.gateway.gateway import AllModelsFailed, LLMGateway
 from roundtable.health import readiness
 from roundtable.logging_setup import configure_logging
+from roundtable.providers.base import ProviderError
 from roundtable.services import build_services
 
 
@@ -44,6 +45,7 @@ async def _chat(args: argparse.Namespace) -> int:
     )
     ctx = CallContext(role=args.role)
     messages = [{"role": "user", "content": args.prompt}]
+    code = 0
     try:
         if args.stream:
             async for chunk in gateway.stream(messages, ctx=ctx, models=args.model or None):
@@ -53,6 +55,12 @@ async def _chat(args: argparse.Namespace) -> int:
         else:
             result = await gateway.complete(messages, ctx=ctx, models=args.model or None)
             print(result.text)
+    except AllModelsFailed as exc:
+        print("error: no model answered:\n  - " + "\n  - ".join(exc.errors), file=sys.stderr)
+        code = 2
+    except ProviderError as exc:
+        print(f"\nerror: {exc}", file=sys.stderr)
+        code = 2
     finally:
         await services.aclose()
         print("\n--- usage ---", file=sys.stderr)
@@ -61,7 +69,7 @@ async def _chat(args: argparse.Namespace) -> int:
                 json.dumps(rec.model_dump(mode="json", exclude={"ts"}), default=str),
                 file=sys.stderr,
             )
-    return 0
+    return code
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -167,6 +167,7 @@ class LLMGateway:
             while True:
                 tries += 1
                 attempt_no += 1
+                start = time.perf_counter()
                 try:
                     waited = await self._acquire(provider, att, ctx, attempt_no, errors)
                     start = time.perf_counter()
@@ -176,7 +177,9 @@ class LLMGateway:
                 except _Skip:
                     break
                 except ProviderError as exc:
-                    if await self._on_error(provider, att, ctx, attempt_no, exc, tries, errors):
+                    if await self._on_error(
+                        provider, att, ctx, attempt_no, exc, tries, errors, _since(start)
+                    ):
                         continue
                     break
                 return await self._on_success(att, ctx, attempt_no, result, waited)
@@ -214,6 +217,7 @@ class LLMGateway:
                 tries += 1
                 attempt_no += 1
                 emitted = False
+                start = time.perf_counter()
                 try:
                     waited = await self._acquire(provider, att, ctx, attempt_no, errors)
                     start = time.perf_counter()
@@ -232,9 +236,18 @@ class LLMGateway:
                     break
                 except ProviderError as exc:
                     if emitted:
-                        await self._record(att, ctx, attempt_no, _status(exc), error=str(exc))
+                        await self._record(
+                            att,
+                            ctx,
+                            attempt_no,
+                            _status(exc),
+                            error=str(exc),
+                            latency_s=_since(start),
+                        )
                         raise
-                    if await self._on_error(provider, att, ctx, attempt_no, exc, tries, errors):
+                    if await self._on_error(
+                        provider, att, ctx, attempt_no, exc, tries, errors, _since(start)
+                    ):
                         continue
                     break
                 # Provider stream ended without a result chunk: treat as a failure.
@@ -287,9 +300,10 @@ class LLMGateway:
         exc: ProviderError,
         tries: int,
         errors: list[str],
+        latency_s: float,
     ) -> bool:
         """Record the failure; return True to retry the same model, False to fall back."""
-        await self._record(att, ctx, attempt_no, _status(exc), error=str(exc))
+        await self._record(att, ctx, attempt_no, _status(exc), error=str(exc), latency_s=latency_s)
         pcfg = provider.config
         if isinstance(exc, RateLimited):
             if exc.retry_after_s is not None:
@@ -348,6 +362,7 @@ class LLMGateway:
         result: ChatResult | None = None,
         error: str | None = None,
         limiter_wait_s: float = 0.0,
+        latency_s: float = 0.0,
     ) -> None:
         rec = UsageRecord(
             run_id=ctx.run_id,
@@ -360,6 +375,7 @@ class LLMGateway:
             status=status,
             error=error,
             limiter_wait_s=round(limiter_wait_s, 4),
+            latency_s=round(latency_s, 4),
         )
         if result is not None:
             rec = rec.model_copy(
@@ -375,6 +391,10 @@ class LLMGateway:
                 }
             )
         await self._usage.record(rec)
+
+
+def _since(start: float) -> float:
+    return time.perf_counter() - start
 
 
 def _model_key(att: Attempt) -> str:

@@ -102,6 +102,7 @@ async def test_timeout_falls_back_without_retrying(clock: FakeClock) -> None:
     assert (await r.gateway.complete(MSG)).text == "ok"
     assert [c.model for c in r.local.calls] == ["a", "b"]
     assert r.statuses() == [("local:a", "timeout"), ("local:b", "ok")]
+    assert r.usage.records[0].latency_s >= 0.0  # failures are timed too
 
 
 async def test_transient_errors_retry_same_model(clock: FakeClock) -> None:
