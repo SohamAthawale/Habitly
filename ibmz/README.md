@@ -37,6 +37,12 @@ All paths are under `/ibmz`. Reads are public. Writes need `Authorization: Beare
 | POST | `/api/events` | `{ title, starts_at (ISO 8601), url?, location?, description? }`, then announced in `#events` |
 | DELETE | `/api/events/:id` | |
 | GET | `/api/glossary?term=jcl` | Leave out `term` to get the whole glossary |
+| GET | `/api/community` | Discord invite (`DISCORD_INVITE_URL`), channel list and slash commands, for the website |
+| POST | `/api/members` | Website join form, RMIT students only: `{ name, student_number: "s1234567", email: "...@student.rmit.edu.au", consent: true }`. Public, 5 per IP per 10 min |
+| GET | `/api/members` | Admin. Add `?format=csv` for a spreadsheet |
+| DELETE | `/api/members/:id` | Admin |
+| POST | `/api/track` | Anonymous website usage counts `{ event, source? }` (no cookies, IPs or ids stored). Public, 120 per IP per 10 min |
+| GET | `/api/stats?days=30` | `Bearer <STATS_PASSWORD>` (read-only) or the admin key. Event totals, by source, by day (UTC), and member counts. 10 wrong tries per IP per 10 min |
 | POST | `/discord/interactions` | Discord slash commands (signature-verified) |
 
 ```bash

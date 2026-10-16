@@ -39,6 +39,26 @@ const SCHEMA = `
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
   );
   CREATE INDEX IF NOT EXISTS idx_events_starts_at ON events(starts_at);
+
+  -- anonymous website usage counts: no cookies, IPs or user ids, just what happened and where from
+  CREATE TABLE IF NOT EXISTS hits (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    event       TEXT NOT NULL,
+    source      TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_hits_created_at ON hits(created_at);
+
+  -- RMIT student sign-ups from the website's join form (for club affiliation);
+  -- one row per student number, re-joining updates it
+  CREATE TABLE IF NOT EXISTS members (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    student_number TEXT NOT NULL UNIQUE,     -- s1234567
+    name           TEXT NOT NULL,
+    email          TEXT NOT NULL,            -- ...@student.rmit.edu.au
+    created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+  );
 `;
 
 // starter content so the hub and /resources are not empty on day one

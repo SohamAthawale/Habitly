@@ -1,0 +1,36 @@
+# IBM Z & Mainframes hub API, served at https://sohamathawale.duckdns.org/ibmz/{health,api/,discord/}
+#
+# Runs as its own Compose project but joins a1-stack's internal network, so the
+# a1-stack nginx container reaches it as ibmz-hub:3000 (route in
+# ~/portfolio/a1-stack/nginx/snippets/ibmz.conf). No ports are published.
+#
+#   docker compose up -d --build          # build / update (after git pull)
+#   docker compose logs -f
+name: ibmz
+
+services:
+  ibmz-hub:
+    build: .
+    image: ibmz-hub
+    container_name: ibmz-hub
+    restart: unless-stopped
+    env_file: [.env]
+    environment:
+      # override .env: inside the container it must listen on all interfaces
+      HOST: 0.0.0.0
+      PORT: "3000"
+      DB_PATH: ./data/ibmz.db
+      DISCORD_STATE_PATH: ./data/discord.json
+      TZ: Australia/Melbourne
+    volumes:
+      - ./data:/app/data   # sqlite db + discord.json; owned by uid 1000 = node
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    networks: [a1]
+
+networks:
+  a1:
+    external: true
+    name: a1-stack_internal

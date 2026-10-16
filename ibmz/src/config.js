@@ -14,6 +14,8 @@ export function loadConfig(env = process.env) {
     corsOrigin: env.CORS_ORIGIN ?? '*',
     // writes (POST/DELETE) are disabled until this is set
     adminApiKey: env.ADMIN_API_KEY ?? '',
+    // read-only password for the anonymous stats page (GET /api/stats); the admin key also works there
+    statsPassword: env.STATS_PASSWORD ?? '',
 
     discord: {
       botToken: env.DISCORD_BOT_TOKEN ?? '',

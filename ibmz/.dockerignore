@@ -1,0 +1,10 @@
+.env
+.env.*
+!.env.example
+data/
+node_modules/
+test/
+deploy/
+Dockerfile
+docker-compose.yml
+.git

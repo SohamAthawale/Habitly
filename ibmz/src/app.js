@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { eventEmbed, GLOSSARY, handleCommand, lookupGlossary, resourceEmbed } from './commands.js';
+import { COMMANDS, eventEmbed, GLOSSARY, handleCommand, lookupGlossary, resourceEmbed } from './commands.js';
 import { TOPICS } from './db.js';
-import { createSignatureVerifier } from './discord.js';
+import { CATEGORY_NAME, CHANNEL_PLAN, createSignatureVerifier } from './discord.js';
 
 const MAX_BODY_BYTES = 64 * 1024;
 
@@ -60,6 +60,39 @@ function httpUrl(body, field, { required = true } = {}) {
 
 const sha256 = (value) => createHash('sha256').update(value).digest();
 
+const MEMBER_COLUMNS = ['id', 'name', 'student_number', 'email', 'created_at', 'updated_at'];
+const STUDENT_NUMBER = /^s?(\d{7})$/i;
+const RMIT_STUDENT_EMAIL = /^[^\s@]+@student\.rmit\.edu\.au$/;
+// the join form is public, so each IP gets a few sign-ups per window
+const JOIN_LIMIT = { max: 5, windowMs: 10 * 60 * 1000 };
+
+// What the website reports to POST /api/track (the get-started funnel and its buttons)
+export const TRACK_EVENTS = ['flow_view', 'step_learn', 'step_xplore', 'step_club', 'referral_click', 'name_copy',
+  'join', 'discord_click', 'qr_open'];
+const TRACK_SOURCE = /^[a-z0-9_-]{1,20}$/;
+const TRACK_LIMIT = { max: 120, windowMs: 10 * 60 * 1000 };
+
+// per-IP sliding window, kept in memory (a restart forgets it, which is fine)
+function rateLimiter({ max, windowMs }, message) {
+  const hits = new Map();
+  return (req) => {
+    // nginx sets X-Real-IP; the container is only reachable through it
+    const ip = req.headers['x-real-ip'] || req.socket.remoteAddress || '';
+    const now = Date.now();
+    const recent = (hits.get(ip) ?? []).filter((t) => now - t < windowMs);
+    if (recent.length >= max) throw new HttpError(429, message);
+    recent.push(now);
+    if (hits.size > 10_000) hits.clear();
+    hits.set(ip, recent);
+  };
+}
+
+function csvCell(value) {
+  const s = String(value ?? '');
+  // quote everything; a leading = + - @ is neutralised so spreadsheets don't run it as a formula
+  return `"${(/^[=+\-@]/.test(s) ? `'${s}` : s).replace(/"/g, '""')}"`;
+}
+
 // announce(channelKey, message) posts to Discord; failures are logged, never surfaced to the API caller
 export function createApp(config, db, { announce = async () => {} } = {}) {
   const q = {
@@ -79,6 +112,22 @@ export function createApp(config, db, { announce = async () => {} } = {}) {
     insertEvent: db.prepare(
       'INSERT INTO events (title, starts_at, url, location, description) VALUES (?, ?, ?, ?, ?) RETURNING *'),
     deleteEvent: db.prepare('DELETE FROM events WHERE id = ?'),
+
+    members: db.prepare(`SELECT ${MEMBER_COLUMNS.join(', ')} FROM members ORDER BY id DESC`),
+    upsertMember: db.prepare(`
+      INSERT INTO members (student_number, name, email) VALUES (:studentNumber, :name, :email)
+      ON CONFLICT(student_number) DO UPDATE SET
+        name = excluded.name, email = excluded.email, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')`),
+    deleteMember: db.prepare('DELETE FROM members WHERE id = ?'),
+
+    insertHit: db.prepare('INSERT INTO hits (event, source) VALUES (?, ?)'),
+    hitTotals: db.prepare('SELECT event, COUNT(*) AS n FROM hits WHERE created_at >= ? GROUP BY event'),
+    hitSources: db.prepare(
+      'SELECT event, source, COUNT(*) AS n FROM hits WHERE created_at >= ? GROUP BY event, source ORDER BY n DESC'),
+    hitDays: db.prepare(`
+      SELECT substr(created_at, 1, 10) AS day, event, COUNT(*) AS n FROM hits
+      WHERE created_at >= ? GROUP BY day, event ORDER BY day`),
+    memberCounts: db.prepare('SELECT COUNT(*) AS total, COALESCE(SUM(created_at >= ?), 0) AS recent FROM members'),
   };
 
   const store = {
@@ -100,6 +149,28 @@ export function createApp(config, db, { announce = async () => {} } = {}) {
     if (!given || !timingSafeEqual(given, adminKeyHash)) throw new HttpError(401, 'invalid admin key');
   }
 
+  const limitJoins = rateLimiter(JOIN_LIMIT, 'too many sign-ups from this address, try again later');
+  const limitTracking = rateLimiter(TRACK_LIMIT, 'too many events');
+
+  // /api/stats takes the admin key or the (weaker, read-only) stats password,
+  // so failed attempts are capped per IP to stop guessing.
+  const statsHashes = [config.adminApiKey, config.statsPassword].filter(Boolean).map(sha256);
+  const statsFailures = new Map();
+  const STATS_FAILURE_LIMIT = { max: 10, windowMs: 10 * 60 * 1000 };
+  function requireStatsAccess(req) {
+    const ip = req.headers['x-real-ip'] || req.socket.remoteAddress || '';
+    const now = Date.now();
+    const recent = (statsFailures.get(ip) ?? []).filter((t) => now - t < STATS_FAILURE_LIMIT.windowMs);
+    if (recent.length >= STATS_FAILURE_LIMIT.max) throw new HttpError(429, 'too many wrong passwords, try again later');
+    const header = req.headers.authorization ?? '';
+    const given = header.startsWith('Bearer ') ? sha256(header.slice(7)) : null;
+    if (given && statsHashes.some((h) => timingSafeEqual(given, h))) return;
+    recent.push(now);
+    if (statsFailures.size > 10_000) statsFailures.clear();
+    statsFailures.set(ip, recent);
+    throw new HttpError(401, 'invalid stats password');
+  }
+
   function notify(channelKey, message) {
     announce(channelKey, message).catch((err) => console.error(`Discord announce failed: ${err.message}`));
   }
@@ -114,6 +185,9 @@ export function createApp(config, db, { announce = async () => {} } = {}) {
         'GET /api/resources?topic=&q=',
         'GET /api/events?all=1',
         'GET /api/glossary?term=',
+        'GET /api/community',
+        'POST /api/members',
+        'POST /api/track',
         'POST /discord/interactions',
       ],
     }]],
@@ -121,6 +195,14 @@ export function createApp(config, db, { announce = async () => {} } = {}) {
     ['GET', /^\/health$/, () => [200, { status: 'ok' }]],
 
     ['GET', /^\/api\/topics$/, () => [200, { topics: TOPICS }]],
+
+    // What the website needs to show the Discord join flow: invite, channels, slash commands
+    ['GET', /^\/api\/community$/, () => [200, {
+      name: CATEGORY_NAME,
+      invite: config.discord.inviteUrl || null,
+      channels: CHANNEL_PLAN.map(({ name, topic }) => ({ name, topic })),
+      commands: COMMANDS.map(({ name, description }) => ({ name, description })),
+    }]],
 
     ['GET', /^\/api\/resources$/, (req, _params, url) => {
       const topic = url.searchParams.get('topic');
@@ -191,6 +273,66 @@ export function createApp(config, db, { announce = async () => {} } = {}) {
       return [200, entry];
     }],
 
+    // Website join form (RMIT students). Always answers the same way, so it can't be used to test who is a member.
+    ['POST', /^\/api\/members$/, async (req) => {
+      limitJoins(req);
+      const body = parseJson(await readBody(req));
+      const joined = [201, { status: 'joined', discord: config.discord.inviteUrl || null }];
+      if (text(body, 'website', { max: 200, required: false })) return joined; // honeypot: bots fill it in
+      if (body.consent !== true) throw new HttpError(400, 'consent is required');
+      const number = STUDENT_NUMBER.exec(text(body, 'student_number', { max: 20 }));
+      if (!number) throw new HttpError(400, 'student_number must look like s1234567');
+      const email = text(body, 'email', { max: 254 }).toLowerCase();
+      if (!RMIT_STUDENT_EMAIL.test(email)) throw new HttpError(400, 'email must be your RMIT student email (@student.rmit.edu.au)');
+      q.upsertMember.run({ studentNumber: `s${number[1]}`, name: text(body, 'name', { max: 100 }), email });
+      return joined;
+    }],
+
+    // ?format=csv downloads a spreadsheet-ready file
+    ['GET', /^\/api\/members$/, (req, _params, url) => {
+      requireAdmin(req);
+      const members = q.members.all();
+      if (url.searchParams.get('format') !== 'csv') return [200, { members }];
+      const rows = [MEMBER_COLUMNS, ...members.map((m) => MEMBER_COLUMNS.map((c) => m[c]))];
+      return [200, rows.map((r) => r.map(csvCell).join(',')).join('\r\n') + '\r\n', {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': 'attachment; filename="members.csv"',
+      }];
+    }],
+
+    ['DELETE', /^\/api\/members\/(\d+)$/, (req, [id]) => {
+      requireAdmin(req);
+      if (q.deleteMember.run(Number(id)).changes === 0) throw new HttpError(404, 'member not found');
+      return [204];
+    }],
+
+    // Anonymous funnel counts from the website. The page sends them with sendBeacon
+    // (text/plain), which parseJson accepts. Nothing identifying is stored.
+    ['POST', /^\/api\/track$/, async (req) => {
+      limitTracking(req);
+      const body = parseJson(await readBody(req));
+      if (!TRACK_EVENTS.includes(body.event)) throw new HttpError(400, `event must be one of: ${TRACK_EVENTS.join(', ')}`);
+      const source = typeof body.source === 'string' && TRACK_SOURCE.test(body.source) ? body.source : '';
+      q.insertHit.run(body.event, source);
+      return [204];
+    }],
+
+    ['GET', /^\/api\/stats$/, (req, _params, url) => {
+      requireStatsAccess(req);
+      const days = Math.min(Math.max(Number(url.searchParams.get('days')) || 30, 1), 365);
+      const since = new Date(Date.now() - days * 86_400_000).toISOString();
+      const totals = Object.fromEntries(TRACK_EVENTS.map((e) => [e, 0]));
+      for (const { event, n } of q.hitTotals.all(since)) totals[event] = n;
+      return [200, {
+        days,
+        since,
+        totals,
+        bySource: q.hitSources.all(since),
+        byDay: q.hitDays.all(since),
+        members: q.memberCounts.get(since),
+      }];
+    }],
+
     // Discord "Interactions Endpoint URL": slash commands arrive here as signed HTTP requests
     ['POST', /^\/discord\/interactions$/, async (req) => {
       if (!verifyDiscordSignature) throw new HttpError(503, 'DISCORD_PUBLIC_KEY is not set');
@@ -206,14 +348,17 @@ export function createApp(config, db, { announce = async () => {} } = {}) {
     }],
   ];
 
-  function send(res, status, body) {
+  // a string body is sent as-is with the handler's own headers (CSV); anything else as JSON
+  function send(res, status, body, headers = {}) {
+    const raw = typeof body === 'string';
     res.writeHead(status, {
       'Access-Control-Allow-Origin': config.corsOrigin,
       'Access-Control-Allow-Headers': 'Authorization, Content-Type',
       'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-      ...(body === undefined ? {} : { 'Content-Type': 'application/json; charset=utf-8' }),
+      ...(body === undefined || raw ? {} : { 'Content-Type': 'application/json; charset=utf-8' }),
+      ...headers,
     });
-    res.end(body === undefined ? undefined : JSON.stringify(body));
+    res.end(body === undefined || raw ? body : JSON.stringify(body));
   }
 
   return async function handle(req, res) {
@@ -237,8 +382,8 @@ export function createApp(config, db, { announce = async () => {} } = {}) {
           methodMismatch = true;
           continue;
         }
-        const [status, body] = await handler(req, match.slice(1), url);
-        return send(res, status, body);
+        const [status, body, headers] = await handler(req, match.slice(1), url);
+        return send(res, status, body, headers);
       }
       throw methodMismatch ? new HttpError(405, 'method not allowed') : new HttpError(404, 'not found');
     } catch (err) {

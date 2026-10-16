@@ -22,6 +22,7 @@ before(async () => {
     DB_PATH: ':memory:',
     ADMIN_API_KEY: ADMIN_KEY,
     DISCORD_PUBLIC_KEY: publicKeyHex,
+    STATS_PASSWORD: 'test-stats-password',
   });
   const app = createApp(config, openDatabase(':memory:'), {
     announce: async (channelKey, message) => announced.push({ channelKey, message }),
@@ -70,6 +71,104 @@ describe('routing', () => {
   test('404 and 405', async () => {
     assert.equal((await api('GET', '/nope')).status, 404);
     assert.equal((await api('PUT', '/api/resources')).status, 405);
+  });
+});
+
+describe('community', () => {
+  test('lists the Discord channels and slash commands for the website', async () => {
+    const { status, body } = await api('GET', '/api/community');
+    assert.equal(status, 200);
+    assert.equal(body.name, CATEGORY_NAME);
+    assert.equal(body.invite, null);
+    assert.deepEqual(body.channels.map((c) => c.name), CHANNEL_PLAN.map((c) => c.name));
+    assert.ok(body.commands.some((c) => c.name === 'resources'));
+  });
+});
+
+describe('members', () => {
+  const join = (body, ip) => api('POST', '/api/members', { body, headers: { 'X-Real-IP': ip } });
+  const ada = { name: 'Ada Lovelace', student_number: 'S1234567', email: 'S1234567@Student.RMIT.edu.au', consent: true };
+
+  test('joining stores one row per student number, and re-joining updates it', async () => {
+    const first = await join(ada, '10.0.0.1');
+    assert.equal(first.status, 201);
+    assert.equal(first.body.status, 'joined');
+    assert.equal((await join({ ...ada, student_number: '1234567', name: '=HYPERLINK("x")' }, '10.0.0.1')).status, 201);
+
+    assert.equal((await api('GET', '/api/members')).status, 401);
+    const { body } = await api('GET', '/api/members', { admin: true });
+    const rows = body.members.filter((m) => m.student_number === 's1234567');
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].email, 's1234567@student.rmit.edu.au');
+    assert.equal(rows[0].name, '=HYPERLINK("x")');
+
+    const csv = await fetch(`${base}/api/members?format=csv`, { headers: { Authorization: `Bearer ${ADMIN_KEY}` } });
+    assert.match(csv.headers.get('content-type'), /text\/csv/);
+    const text = await csv.text();
+    assert.match(text, /^"id","name","student_number","email"/);
+    assert.match(text, /"'=HYPERLINK\(""x""\)"/);
+
+    assert.equal((await api('DELETE', `/api/members/${rows[0].id}`, { admin: true })).status, 204);
+  });
+
+  test('only takes RMIT students', async () => {
+    assert.equal((await join({ ...ada, consent: false }, '10.0.0.2')).status, 400);
+    assert.equal((await join({ ...ada, email: 'ada@gmail.com' }, '10.0.0.2')).status, 400);
+    assert.equal((await join({ ...ada, student_number: 'e123' }, '10.0.0.2')).status, 400);
+    assert.equal((await join({ ...ada, name: '' }, '10.0.0.2')).status, 400);
+  });
+
+  test('honeypot submissions look accepted but are not stored', async () => {
+    assert.equal((await join({ ...ada, student_number: 's7654321', website: 'spam' }, '10.0.0.3')).status, 201);
+    const { body } = await api('GET', '/api/members', { admin: true });
+    assert.ok(!body.members.some((m) => m.student_number === 's7654321'));
+  });
+
+  test('rate-limits sign-ups per IP', async () => {
+    for (let i = 0; i < 5; i += 1) await join({ ...ada, student_number: `s100000${i}` }, '10.0.0.4');
+    assert.equal((await join({ ...ada, student_number: 's1000006' }, '10.0.0.4')).status, 429);
+    assert.equal((await join({ ...ada, student_number: 's1000007' }, '10.0.0.5')).status, 201);
+  });
+});
+
+describe('analytics', () => {
+  const track = (body, ip = '10.1.0.1') => api('POST', '/api/track', { body, headers: { 'X-Real-IP': ip } });
+
+  test('counts known events by source, admin-only stats', async () => {
+    assert.equal((await track({ event: 'flow_view', source: 'qr' })).status, 204);
+    assert.equal((await track({ event: 'referral_click', source: 'qr' })).status, 204);
+    assert.equal((await track({ event: 'referral_click', source: 'NOT VALID!' })).status, 204);
+    assert.equal((await track({ event: 'made_up' })).status, 400);
+    // sendBeacon posts text/plain
+    const beacon = await fetch(`${base}/api/track`, { method: 'POST', body: JSON.stringify({ event: 'qr_open' }),
+      headers: { 'Content-Type': 'text/plain;charset=UTF-8', 'X-Real-IP': '10.1.0.1' } });
+    assert.equal(beacon.status, 204);
+
+    assert.equal((await api('GET', '/api/stats')).status, 401);
+    const { body } = await api('GET', '/api/stats?days=7', { admin: true });
+    assert.equal(body.days, 7);
+    assert.equal(body.totals.referral_click, 2);
+    assert.equal(body.totals.qr_open, 1);
+    assert.equal(body.totals.join, 0);
+    assert.deepEqual(body.bySource.find((r) => r.event === 'referral_click' && r.source === 'qr'),
+      { event: 'referral_click', source: 'qr', n: 1 });
+    assert.ok(body.byDay.length >= 1);
+    assert.equal(typeof body.members.total, 'number');
+  });
+
+  test('the stats password opens stats only, and wrong guesses are capped', async () => {
+    const stats = (key, ip) => api('GET', '/api/stats', { headers: { Authorization: `Bearer ${key}`, 'X-Real-IP': ip } });
+    assert.equal((await stats('test-stats-password', '10.2.0.1')).status, 200);
+    assert.equal((await api('GET', '/api/members', { headers: { Authorization: 'Bearer test-stats-password' } })).status, 401);
+    for (let i = 0; i < 10; i += 1) assert.equal((await stats('000000', '10.2.0.2')).status, 401);
+    assert.equal((await stats('test-stats-password', '10.2.0.2')).status, 429);
+    assert.equal((await stats('test-stats-password', '10.2.0.3')).status, 200);
+  });
+
+  test('rate-limits event floods per IP', async () => {
+    let last;
+    for (let i = 0; i < 121; i += 1) last = await track({ event: 'flow_view' }, '10.1.0.9');
+    assert.equal(last.status, 429);
   });
 });
 
