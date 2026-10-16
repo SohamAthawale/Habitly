@@ -1,0 +1,17 @@
+{
+  "name": "ibmz-hub",
+  "version": "1.0.0",
+  "description": "IBM Z & mainframe community hub: REST API served under /ibmz plus a Discord bot",
+  "private": true,
+  "type": "module",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning src/server.js",
+    "dev": "node --env-file-if-exists=.env --disable-warning=ExperimentalWarning --watch src/server.js",
+    "discord:setup": "node --env-file-if-exists=.env scripts/discord-setup.js",
+    "test": "node --disable-warning=ExperimentalWarning --test \"test/**/*.test.js\""
+  }
+}

@@ -1,0 +1,29 @@
+# sudo cp deploy/ibmz-hub.service /etc/systemd/system/
+# sudo systemctl daemon-reload && sudo systemctl enable --now ibmz-hub
+# Logs: journalctl -u ibmz-hub -f
+
+[Unit]
+Description=IBM Z & Mainframes hub API (/ibmz)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ibmz
+Group=ibmz
+WorkingDirectory=/opt/Habitly/ibmz
+EnvironmentFile=/opt/Habitly/ibmz/.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning src/server.js
+Restart=on-failure
+RestartSec=5
+
+# hardening: the service can only write to its data directory
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/Habitly/ibmz/data
+
+[Install]
+WantedBy=multi-user.target
