@@ -1,0 +1,377 @@
+---
+title: "Does Getting Richer Mean Polluting More?"
+subtitle: "Income and per-capita CO₂ emissions across 164 countries, 2000–2022"
+author: "Student Name (sXXXXXXX)"
+date: "Last updated: `r format(Sys.time(), '%d %B, %Y')`"
+output:
+  slidy_presentation:
+    font_adjustment: -1
+    highlight: haddock
+    mathjax: "default"
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+# Packages loaded in this chunk will not appear in the presentation.
+knitr::opts_chunk$set(
+  fig.align = "center",
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 10,
+  fig.height = 4.2,
+  dpi = 110
+)
+
+library(ggplot2)   # plots
+library(dplyr)     # data manipulation
+library(tidyr)     # reshaping
+library(readr)     # reading csv files
+library(knitr)     # tables
+library(car)       # Levene's test
+library(gridExtra) # arranging plots side by side
+
+theme_set(theme_minimal(base_size = 13))
+f2 <- function(x, d = 2) formatC(x, format = "f", digits = d, big.mark = ",")
+fp <- function(p) ifelse(p < .001, "< .001", paste("=", formatC(p, format = "f", digits = 3)))
+```
+
+
+# Introduction
+
+<style type="text/css">
+body { font-size: 15px; }
+h1 { font-size: 26px; }
+div.slide { padding: 8px 30px; }
+pre, code { font-size: 12px; }
+table { font-size: 14px; }
+.small { font-size: 13px; }
+</style>
+
+- Carbon dioxide (CO₂) from burning fossil fuels and making cement is the main driver of global warming. Annual emissions reached about **38.6 billion tonnes** in 2024 (Friedlingstein et al., 2025).
+- Rich and poor countries emit very different amounts. In 2022 the average person in Qatar emitted about 38 t of CO₂, as much as **more than 500 people in Somalia or the DR Congo**.
+- This leads to two big questions in climate policy:
+  - **Is emitting tied to wealth?** If CO₂ rises with income, emissions will keep growing as poorer countries develop (about 6.6 billion of the world's 8 billion people live in low- or middle-income countries).
+  - **Are rich countries "decoupling"?** Can they keep income high while cutting emissions? This idea underlies the *Environmental Kuznets Curve* (EKC), which says pollution first rises and then falls as income grows (Grossman & Krueger, 1995).
+
+**Key terms**
+
+- **CO₂ per capita**: a country's annual fossil and industrial CO₂ emissions (tonnes) divided by its population.
+- **GDP per capita**: economic output per person, adjusted for inflation and living costs. It is measured in *international dollars* (2011 prices), so countries can be compared fairly.
+- **Elasticity**: the % change in CO₂ per capita that goes with a 1% change in GDP per capita.
+
+# Problem Statement
+
+**Overall question:** *How closely are a country's CO₂ emissions per person tied to its income, and has that link changed since 2000?*
+
+| # | Research question | Statistical method |
+|---|-------------------|--------------------|
+| RQ1 | Did the average country's CO₂ per capita change between 2000 and 2022? | Paired-samples *t*-test and 95% CI (Task 5) |
+| RQ2 | Did that change differ between countries that were richer and poorer in 2000? | Welch two-sample *t*-test and 95% CI (Task 5) |
+| RQ3 | How strongly does GDP per capita predict CO₂ per capita in 2022, and is the relationship proportional (elasticity = 1)? | Simple linear regression on the log–log scale (Task 7) |
+
+- I first summarise the data with descriptive statistics and plots. Next I state the hypotheses, check the assumptions and report the test statistics, *p*-values and CIs (α = 0.05). Finally I interpret the results for a climate-policy audience.
+
+# Data: Source and Collection
+
+- **Source:** Our World in Data (OWID) *CO₂ and Greenhouse Gas Emissions* dataset (Ritchie, Rosado & Roser, 2023), downloaded from the official GitHub repository on 16 October 2026: <https://github.com/owid/co2-data>.
+- **Licence:** Creative Commons **CC BY 4.0**, so the data are open and can be shared with attribution.
+- **How OWID compiled it** (secondary data; I did not collect it):
+  - **CO₂ emissions:** *Global Carbon Budget 2025* (Friedlingstein et al., 2025). National energy and industry statistics are converted to CO₂ using fuel-specific emission factors. This covers territorial emissions only and excludes land-use change.
+  - **GDP:** *Maddison Project Database 2023* (Bolt & van Zanden, 2024), in 2011 international $.
+  - **Population:** OWID's long-run population series, mainly UN *World Population Prospects*.
+- **Sampling:** There is no random sample. The dataset aims to be a **census of all countries**, and the analysis set is every country with complete data. Results therefore describe *countries* (each country counts once, whatever its population), not individual people.
+- **Regions:** I added a continent for each country from the open *ISO-3166 Countries with Regional Codes* list (Duncalf, 2024; CC BY-SA 4.0), joined on the 3-letter ISO code.
+- **Replication:** Download `owid-co2-data.csv`, keep the rows for 2000 and 2022, and run the pre-processing code on the next slides. A copy of the snapshot used here is in `data/`.
+
+# Data: Variables
+
+| Variable | Description | Type / scale | Units |
+|----------|-------------|--------------|-------|
+| `country`, `iso_code` | Country name and ISO 3166-1 alpha-3 code | Identifier | – |
+| `year` | Year of observation (2000 or 2022) | Discrete | year |
+| `population` | Mid-year population | Ratio | people |
+| `gdp` | Real GDP, adjusted for purchasing power (PPP) | Ratio | 2011 international $ |
+| `co2_per_capita` | Fossil and industry CO₂ per person | Ratio | tonnes / person / year |
+| `gdppc` *(derived)* | `gdp / population`, i.e. GDP per capita | Ratio | int-$ / person |
+| `change` *(derived)* | CO₂ per capita in 2022 minus 2000 | Interval | tonnes / person |
+| `income_2000` *(derived)* | Factor with 2 levels: **Poorer half** / **Richer half**, split at the median 2000 GDP per capita | Nominal | – |
+| `region` *(joined)* | Factor with 4 levels: **Africa**, **Americas**, **Asia & Oceania**, **Europe** | Nominal | – |
+
+- **Why 2000 and 2022?** 2022 is the latest year with GDP data (Maddison ends in 2022). 2000 gives a 22-year comparison window, and from 2000 onward almost every current country exists with its present borders.
+
+# Data: Pre-processing
+
+```{r preprocess}
+co2 <- read_csv("data/owid-co2-2000-2022.csv")     # 2000 & 2022 rows of owid-co2-data.csv
+iso <- read_csv("data/iso3166-regions.csv")         # ISO code -> continent lookup
+
+countries <- co2 %>%
+  filter(!is.na(iso_code)) %>%                    # drop aggregates (World, continents, income groups)
+  select(country, iso_code, year, population, gdp, co2_per_capita) %>%
+  pivot_wider(names_from = year, values_from = c(population, gdp, co2_per_capita))
+
+n_all <- nrow(countries)
+world_pop <- co2$population[co2$country == "World" & co2$year == 2022]
+
+dat <- countries %>%
+  drop_na() %>%                                             # complete cases in both years
+  mutate(gdppc_2000 = gdp_2000 / population_2000,
+         gdppc_2022 = gdp_2022 / population_2022,
+         change     = co2_per_capita_2022 - co2_per_capita_2000,
+         income_2000 = factor(ifelse(gdppc_2000 > median(gdppc_2000), "Richer half", "Poorer half"),
+                              levels = c("Poorer half", "Richer half"))) %>%
+  left_join(select(iso, iso_code = `alpha-3`, region), by = "iso_code") %>%
+  mutate(region = case_when(iso_code == "TWN" ~ "Asia",          # Taiwan is not in the ISO list
+                            TRUE ~ region),
+         region = factor(ifelse(region %in% c("Asia", "Oceania"), "Asia & Oceania", region)))
+```
+
+- **Aggregates:** I removed rows with no ISO code. These are groups of countries (the world, continents, income groups) rather than single countries, and keeping them would count some countries twice.
+- **Missing data:** `r n_all` countries and territories have an ISO code. Of these, **`r n_all - nrow(dat)`** have no GDP or CO₂ value in at least one year, so I removed them. Most are micro-states and small islands (e.g. Monaco, Tuvalu), plus Somalia, Sudan/South Sudan and Eritrea. Imputing values is not justified for whole-economy figures. **Final analysis set: n = `r nrow(dat)` countries**, about `r f2(100*sum(dat$population_2022)/world_pop, 0)`% of the world's population.
+- Oceania has only 2 countries left (Australia and New Zealand), so I merged it with Asia for the plots.
+
+# Descriptive Statistics
+
+```{r desc-table}
+summ <- function(x) c(Min = min(x), Q1 = quantile(x, .25, names = FALSE), Median = median(x),
+                      Q3 = quantile(x, .75, names = FALSE), Max = max(x), Mean = mean(x),
+                      SD = sd(x), n = length(x), Missing = sum(is.na(x)))
+tab <- rbind(`CO₂ per capita 2000 (t)`  = summ(dat$co2_per_capita_2000),
+             `CO₂ per capita 2022 (t)`  = summ(dat$co2_per_capita_2022),
+             `Change 2000→2022 (t)`     = summ(dat$change),
+             `GDP per capita 2022 (int-$ '000)` = summ(dat$gdppc_2022 / 1000))
+kable(tab, digits = 2)
+```
+
+- **Strong right skew.** In 2022 the mean CO₂ per capita (`r f2(mean(dat$co2_per_capita_2022))` t) is much higher than the median (`r f2(median(dat$co2_per_capita_2022))` t), and the same holds for GDP per capita. A few very rich, oil-producing countries pull the means up.
+- **Huge range:** from `r f2(min(dat$co2_per_capita_2022))` t (`r dat$country[which.min(dat$co2_per_capita_2022)]`) to `r f2(max(dat$co2_per_capita_2022))` t (`r dat$country[which.max(dat$co2_per_capita_2022)]`) per person, about `r round(max(dat$co2_per_capita_2022)/min(dat$co2_per_capita_2022))` times higher.
+- **Change since 2000:** the median country *increased* by `r f2(median(dat$change))` t, but the mean change is *negative* (`r f2(mean(dat$change))` t). A few large falls drive the mean down, which points to opposite trends in different groups of countries.
+
+# Visualisation: Distributions and the Log Scale
+
+```{r hist, fig.height=3.9}
+p1 <- ggplot(dat, aes(co2_per_capita_2022)) +
+  geom_histogram(bins = 30, fill = "#2b8cbe", colour = "white") +
+  labs(title = "Raw scale", x = "CO₂ per capita, 2022 (t)", y = "Countries")
+p2 <- ggplot(dat, aes(co2_per_capita_2022)) +
+  geom_histogram(bins = 30, fill = "#2b8cbe", colour = "white") + scale_x_log10() +
+  labs(title = "Log₁₀ scale", x = "CO₂ per capita, 2022 (t, log scale)", y = "Countries")
+p3 <- ggplot(dat, aes(gdppc_2022)) +
+  geom_histogram(bins = 30, fill = "#e6550d", colour = "white") + scale_x_log10(labels = scales::comma) +
+  labs(title = "Log₁₀ scale", x = "GDP per capita, 2022 (int-$, log scale)", y = "Countries")
+grid.arrange(p1, p2, p3, ncol = 3)
+```
+
+- On the raw scale, CO₂ per capita is strongly right-skewed with a long upper tail (Gulf states, Trinidad & Tobago). On the **log₁₀ scale** both CO₂ and GDP per capita look roughly symmetric.
+- **Outliers:** the extreme values are real countries with genuine data (e.g. Qatar's oil and gas industry), not recording errors, so **I kept them**. I **log-transformed** the variables for the regression and checked how much the extreme cases influence each test.
+
+# Visualisation: Emissions by Region
+
+```{r region, fig.height=3.6}
+ggplot(dat, aes(x = reorder(region, co2_per_capita_2022, median), y = co2_per_capita_2022, fill = region)) +
+  geom_boxplot(alpha = .7, outlier.shape = NA, show.legend = FALSE) +
+  geom_jitter(width = .15, alpha = .5, size = 1.4, show.legend = FALSE) +
+  scale_y_log10() + coord_flip() +
+  labs(x = NULL, y = "CO₂ per capita, 2022 (t, log scale)")
+```
+
+```{r region-table}
+dat %>% group_by(Region = region) %>%
+  summarise(n = n(), `Median CO₂ pc (t)` = median(co2_per_capita_2022),
+            `Median GDP pc (int-$)` = median(gdppc_2022)) %>%
+  arrange(`Median CO₂ pc (t)`) %>% kable(digits = 2, format.args = list(big.mark = ","))
+```
+
+- Regions rank the same way on CO₂ per capita as on GDP per capita. Africa is lowest on both and Europe is highest on both, which suggests that income is the common factor.
+
+# Visualisation: Income vs Emissions (2022)
+
+```{r scatter, fig.height=4.6}
+lab <- dat %>% filter(country %in% c("Qatar", "United States", "China", "India", "Australia",
+                                     "Switzerland", "Nigeria", "Democratic Republic of Congo",
+                                     "Trinidad and Tobago", "North Korea", "Sweden", "Mongolia"))
+ggplot(dat, aes(gdppc_2022, co2_per_capita_2022)) +
+  geom_smooth(method = "lm", formula = y ~ x, colour = "black", linewidth = .7) +
+  geom_point(aes(colour = region), size = 2.2, alpha = .8) +
+  geom_text(data = lab, aes(label = country), size = 3.2, vjust = -0.8, check_overlap = TRUE) +
+  scale_x_log10(labels = scales::comma) + scale_y_log10() +
+  labs(x = "GDP per capita, 2022 (int-$, log scale)", y = "CO₂ per capita (t, log scale)", colour = "Region")
+```
+
+- On the log–log scale the relationship is **strong, positive and close to linear** (Pearson *r* = `r f2(cor(log10(dat$gdppc_2022), log10(dat$co2_per_capita_2022)))`).
+- The spread of points around the line looks fairly even. North Korea and Mongolia lie above the line (coal-heavy economies), while Switzerland and Sweden lie below it (low-carbon electricity from hydro and nuclear power).
+
+# Visualisation: How Did Emissions Change, 2000→2022?
+
+```{r change-plot, fig.height=3.9}
+q1 <- ggplot(dat, aes(change, fill = income_2000)) +
+  geom_histogram(bins = 40, colour = "white", position = "identity", alpha = .7) +
+  geom_vline(xintercept = 0, linetype = 2) +
+  labs(x = "Change in CO₂ per capita, 2000→2022 (t)", y = "Countries", fill = NULL) +
+  theme(legend.position = "top")
+q2 <- ggplot(dat, aes(income_2000, change, fill = income_2000)) +
+  geom_boxplot(alpha = .7, show.legend = FALSE) + geom_hline(yintercept = 0, linetype = 2) +
+  stat_summary(fun = mean, geom = "point", shape = 23, size = 3, fill = "white") +
+  labs(x = "Income group in 2000", y = "Change (t per person)")
+grid.arrange(q1, q2, ncol = 2, widths = c(1.3, 1))
+```
+
+- `r sum(dat$change > 0)` of `r nrow(dat)` countries (`r f2(100*mean(dat$change > 0), 0)`%) *increased* their per-capita emissions. However, **most countries in the richer half reduced** their emissions, while **most in the poorer half increased** them. (◇ = group mean)
+- The changes are heavy-tailed. Qatar (`r f2(dat$change[dat$country=="Qatar"], 1)` t) and the UAE (`r f2(dat$change[dat$country=="United Arab Emirates"], 1)` t) are extreme low outliers, and the richer half varies much more than the poorer half.
+
+# Hypothesis Test 1: Paired-Samples *t*-Test
+
+**RQ1 — Did the average country's CO₂ per capita change between 2000 and 2022?** Each country is measured twice, so the two samples are **dependent**. I therefore analyse the within-country differences $d_i = \text{CO}_{2,2022} - \text{CO}_{2,2000}$.
+
+$$H_0: \mu_\Delta = 0 \qquad H_A: \mu_\Delta \ne 0 \qquad (\alpha = 0.05)$$
+
+**Assumptions**
+
+- **Paired, dependent observations:** yes, the same country is measured in both years.
+- **The differences are approximately normal *or* n is large:** the Q–Q plot below shows heavy tails (Qatar, UAE, Mongolia). However, n = `r nrow(dat)` > 30, so by the Central Limit Theorem the sampling distribution of $\bar d$ is approximately normal and the *t*-test is valid.
+
+```{r paired-qq, fig.height=2.7, fig.width=5}
+ggplot(dat, aes(sample = change)) + stat_qq(alpha = .6) + stat_qq_line(colour = "red") +
+  labs(x = "Theoretical quantiles", y = "Sample quantiles (t)", title = "Normal Q–Q plot of differences") +
+  theme(plot.title = element_text(size = 11))
+```
+
+# Hypothesis Test 1: Results
+
+```{r paired-test}
+ptest <- t.test(dat$co2_per_capita_2022, dat$co2_per_capita_2000, paired = TRUE, conf.level = 0.95)
+ptest
+```
+
+```{r paired-sens, include=FALSE}
+wx <- wilcox.test(dat$co2_per_capita_2022, dat$co2_per_capita_2000, paired = TRUE, exact = FALSE)
+```
+
+- **Mean difference** $\bar d$ = `r f2(ptest$estimate)` t per person, *t*(`r ptest$parameter`) = `r f2(ptest$statistic)`, *p* `r fp(ptest$p.value)`.
+- **95% CI for $\mu_\Delta$:** [`r f2(ptest$conf.int[1])`, `r f2(ptest$conf.int[2])`] t. The interval **contains 0**, which agrees with the *p*-value.
+- **Decision:** *p* > 0.05, so we **fail to reject H₀**. There is no statistically significant evidence that the average country's CO₂ per capita changed between 2000 and 2022.
+- **Interpretation:** across countries, the global average has not clearly moved in 22 years. This "no change" result is misleading, though: the descriptive plots suggest that falls in rich countries and rises in poor countries cancel out. The next test checks this.
+- *Robustness check:* a Wilcoxon signed-rank test, which is less sensitive to the heavy tails, reaches the **same conclusion** (*p* `r fp(wx$p.value)`). Neither the mean nor the typical (median) country changed significantly.
+
+# Hypothesis Test 2: Welch Two-Sample *t*-Test
+
+**RQ2 — Did the change in CO₂ per capita differ between countries that were richer and poorer in 2000?**
+
+$$H_0: \mu_{\Delta,\text{poorer}} - \mu_{\Delta,\text{richer}} = 0 \qquad H_A: \mu_{\Delta,\text{poorer}} - \mu_{\Delta,\text{richer}} \ne 0$$
+
+```{r welch-assump}
+dat %>% group_by(income_2000) %>%
+  summarise(n = n(), Mean = mean(change), SD = sd(change), Median = median(change)) %>% kable(digits = 2)
+lev <- leveneTest(change ~ income_2000, data = dat)
+```
+
+**Assumptions**
+
+- **Independent groups:** yes, each country belongs to exactly one income group.
+- **Normality / large samples:** n = 82 per group, which is more than 30, so the CLT applies even though the richer group is heavy-tailed.
+- **Equal variances?** Levene's test: *F*(`r lev$Df[1]`, `r lev$Df[2]`) = `r f2(lev[1, "F value"])`, *p* `r fp(lev[1, "Pr(>F)"])`. Equal variances are **rejected** (SD `r f2(sd(dat$change[dat$income_2000=="Richer half"]))` vs `r f2(sd(dat$change[dat$income_2000=="Poorer half"]))`), so I use **Welch's *t*-test**, which does not assume equal variances.
+
+# Hypothesis Test 2: Results
+
+```{r welch-test}
+wt <- t.test(change ~ income_2000, data = dat, var.equal = FALSE)
+wt
+```
+
+```{r welch-sens, include=FALSE}
+wt_noq <- t.test(change ~ income_2000, data = filter(dat, !country %in% c("Qatar", "United Arab Emirates")))
+```
+
+- The poorer half **rose** by `r f2(wt$estimate[1])` t per person on average, and the richer half **fell** by `r f2(abs(wt$estimate[2]))` t per person.
+- **Welch** *t*(`r f2(wt$parameter, 1)`) = `r f2(wt$statistic)`, *p* `r fp(wt$p.value)`. **95% CI for the difference in mean change:** [`r f2(wt$conf.int[1])`, `r f2(wt$conf.int[2])`] t, which **does not contain 0**.
+- **Decision:** *p* < 0.05, so we **reject H₀**. The change in per-capita emissions differed significantly by income group.
+- **Interpretation:** we are 95% confident that the average change in poorer countries was between `r f2(wt$conf.int[1])` and `r f2(wt$conf.int[2])` t per person **higher** than in richer countries. Rich and poor countries are **converging** toward each other.
+- *Sensitivity:* without the two largest outliers (Qatar and UAE), the difference is still significant (`r f2(diff(rev(wt_noq$estimate)))` t, *p* `r fp(wt_noq$p.value)`), so the result does not depend on those two countries.
+
+# Regression: Model and Hypotheses
+
+**RQ3 — How strongly does income predict emissions?** Both variables are right-skewed, so I fit a **log–log** simple linear regression for 2022:
+
+$$\log_{10}(\text{CO}_2\text{pc}_i) = \beta_0 + \beta_1 \log_{10}(\text{GDPpc}_i) + \varepsilon_i,\qquad \varepsilon_i \sim N(0,\sigma^2)$$
+
+In this model $\beta_1$ is an **elasticity**: a 1% higher GDP per capita goes with about $\beta_1$% higher CO₂ per capita.
+
+- **Overall model / slope:** $H_0: \beta_1 = 0$ (GDP per capita does not predict CO₂) vs $H_A: \beta_1 \ne 0$.
+- **Proportionality:** $H_0: \beta_1 = 1$ (emissions rise in proportion to income) vs $H_A: \beta_1 \ne 1$.
+
+```{r reg-fit}
+mod <- lm(log10(co2_per_capita_2022) ~ log10(gdppc_2022), data = dat)
+summary(mod)
+```
+
+# Regression: Checking Assumptions
+
+```{r reg-diag, fig.height=4.4}
+par(mfrow = c(1, 4), mar = c(4, 4, 2.5, 1), cex = .85)
+plot(mod, which = c(1, 2, 3, 5))
+```
+
+- **Linearity:** the Residuals vs Fitted plot shows a fairly flat trend with a slight downward bend at the top end (checked on the next slide).
+- **Independence:** each country is a separate observation. Neighbouring countries can share energy systems, which is a minor concern (see Discussion).
+- **Normality of residuals:** the Q–Q plot is close to the line, with a slightly heavy upper tail (North Korea and Mongolia are above the line).
+- **Homoscedasticity:** the Scale–Location plot is roughly flat, so the residual spread is fairly constant.
+- **Influential points:** every Cook's distance is far below 0.5 (max = `r f2(max(cooks.distance(mod)), 3)`, `r dat$country[which.max(cooks.distance(mod))]`), so no single country drives the fit.
+- **Conclusion:** the assumptions are reasonably satisfied, so inference from the model is appropriate.
+
+# Regression: Results and Interpretation
+
+```{r reg-results}
+ci <- confint(mod)
+t_b1_eq1 <- (coef(mod)[2] - 1) / summary(mod)$coef[2, 2]
+p_b1_eq1 <- 2 * pt(-abs(t_b1_eq1), df = mod$df.residual)
+quad <- lm(log10(co2_per_capita_2022) ~ log10(gdppc_2022) + I(log10(gdppc_2022)^2), data = dat)
+kable(data.frame(Term = c("Intercept", "log10(GDP pc)"), Estimate = coef(mod),
+                 `2.5%` = ci[, 1], `97.5%` = ci[, 2], check.names = FALSE), digits = 3, row.names = FALSE)
+```
+
+- **Model fit:** *F*(1, `r mod$df.residual`) = `r f2(summary(mod)$fstatistic[1], 1)`, *p* < .001, **R² = `r f2(summary(mod)$r.squared, 3)`**. Income alone explains about **`r f2(100*summary(mod)$r.squared, 0)`%** of the variation in log CO₂ per capita.
+- **Slope:** $\hat\beta_1$ = `r f2(coef(mod)[2], 3)`, 95% CI [`r f2(ci[2,1], 3)`, `r f2(ci[2,2], 3)`], *p* < .001. **We reject $H_0: \beta_1 = 0$.** A country with **10% higher** GDP per capita emits about **`r f2(100*(1.1^coef(mod)[2]-1), 1)`% more** CO₂ per person.
+- **Proportionality:** *t* = `r f2(t_b1_eq1)`, *p* `r fp(p_b1_eq1)`. The CI contains 1, so we **fail to reject $H_0: \beta_1 = 1$**. Across countries, emissions rise roughly **one-for-one** with income, so the CO₂ emitted per dollar of GDP is broadly similar at all income levels.
+- **Curvature check (EKC):** adding a squared term gives a negative coefficient (`r f2(coef(quad)[3], 3)`, *p* `r fp(summary(quad)$coef[3,4])`), so the curve **flattens** at high incomes. However, its turning point (≈ int-$`r f2(10^(-coef(quad)[2]/(2*coef(quad)[3]))/1e6, 1)` million per person) is far outside the data. **There is no peak: richer countries never emit less on average.**
+
+# Discussion: Major Findings
+
+1. **Income is a very strong predictor of emissions.** GDP per capita explains about `r f2(100*summary(mod)$r.squared, 0)`% of the cross-country variation in (log) CO₂ per capita. The elasticity is about `r f2(coef(mod)[2], 2)`, and its CI contains 1, so emissions rise roughly in proportion to income. A curvature term shows flattening at the top but **no turning point**, which gives little support to an EKC peak within the observed range of income.
+2. **The average country did not change significantly** from 2000 to 2022 (paired *t*-test, *p* `r fp(ptest$p.value)`). This average hides two opposite trends.
+3. **Rich and poor countries moved in opposite directions.** The richer half cut per-capita emissions by about `r f2(abs(wt$estimate[2]), 1)` t on average, while the poorer half added about `r f2(wt$estimate[1], 1)` t. The difference is highly significant (Welch *p* `r fp(wt$p.value)`, 95% CI [`r f2(wt$conf.int[1])`, `r f2(wt$conf.int[2])`] t) and remains significant without the outliers.
+
+**Putting it together:** rich countries *have* started to cut their own emissions (time trend), yet they are still the highest emitters per person (cross-section). Meanwhile, the rising emissions of developing countries follow the same income–CO₂ line. If those countries grow along that line, global emissions will rise unless low-carbon energy changes the relationship.
+
+# Discussion: Strengths, Limitations and Future Work
+
+**Strengths**
+
+- Open, authoritative data (Global Carbon Budget and Maddison) covering about `r f2(100*sum(dat$population_2022)/world_pop, 0)`% of the world's population, with a fully reproducible pipeline.
+- Each method matches its question: a paired design for repeated measures, Welch's test for unequal variances, and a log–log model for skewed ratio data. All assumptions were checked, and sensitivity analyses (Wilcoxon test, removing outliers, a quadratic term) support the conclusions.
+
+**Limitations**
+
+- **Observational data**, so the regression shows **association, not causation**. Climate, fossil-fuel resources and energy mix also matter.
+- **Countries are unweighted:** Luxembourg counts as much as China. The results describe the "average country", not the average person.
+- **Territorial emissions only:** rich countries "import" emissions in the goods they buy (Peters et al., 2011), so their reported cuts overstate their real decoupling.
+- Small and conflict-affected states are missing (not missing at random), and neighbouring countries may not be fully independent.
+
+**Future directions:** use consumption-based CO₂ data, fit population-weighted or panel models over every year, and add the energy mix (share of renewables) as a second predictor in a multiple regression.
+
+**Take-home message:** *Across countries, CO₂ per person still rises almost one-for-one with income. Rich countries have begun to cut emissions while poorer countries' emissions rise, so global climate goals depend on helping developing countries grow on a cleaner path than rich countries took.*
+
+# References
+
+<div class="small">
+
+- Bolt, J., & van Zanden, J. L. (2024). Maddison style estimates of the evolution of the world economy: A new 2023 update. *Journal of Economic Surveys*, 1–41. https://doi.org/10.1111/joes.12618
+- Duncalf, L. (2024). *ISO-3166 Countries with Regional Codes* [Data set]. GitHub. https://github.com/lukes/ISO-3166-Countries-with-Regional-Codes (CC BY-SA 4.0)
+- Friedlingstein, P., et al. (2025). Global Carbon Budget 2025. *Earth System Science Data*. https://globalcarbonbudget.org/
+- Grossman, G. M., & Krueger, A. B. (1995). Economic growth and the environment. *The Quarterly Journal of Economics*, 110(2), 353–377. https://doi.org/10.2307/2118443
+- Peters, G. P., Minx, J. C., Weber, C. L., & Edenhofer, O. (2011). Growth in emission transfers via international trade from 1990 to 2008. *PNAS*, 108(21), 8903–8908. https://doi.org/10.1073/pnas.1006388108
+- Ritchie, H., Rosado, P., & Roser, M. (2023). *CO₂ and greenhouse gas emissions* [Data set]. Our World in Data. https://github.com/owid/co2-data (CC BY 4.0). Retrieved 16 October 2026.
+- R Core Team (2024). *R: A language and environment for statistical computing*. R Foundation for Statistical Computing. https://www.R-project.org/
+- Wickham, H., et al. (2019). Welcome to the tidyverse. *Journal of Open Source Software*, 4(43), 1686. https://doi.org/10.21105/joss.01686
+- Fox, J., & Weisberg, S. (2019). *An R companion to applied regression* (3rd ed.). Sage. (`car` package)
+
+</div>
